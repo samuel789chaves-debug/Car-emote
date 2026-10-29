@@ -1,6 +1,8 @@
 -- ==========================================================
--- 🚗 DIREÇÃO FANTASMA — SCRIPT ÚNICO (Delta / executor)
--- Cola tudo no Delta e executa.
+-- 🚗 DIREÇÃO FANTASMA — v4 (Delta / executor)
+-- ✅ Animação via Motor6D.Transform (mesma que animações usam)
+-- ✅ Para todas as animações ao entrar
+-- ✅ Funciona em R15 e R6
 -- ==========================================================
 
 local Players          = game:GetService("Players")
@@ -24,23 +26,27 @@ local RISE_TIME    = 0.6
 local ENTER_TIME   = 0.7
 local SHIFT_TIME   = 0.45
 
+-- ⚙️ Ajuste fino (se o braço for pro lado errado, troca o sinal)
+local ARM_X = -75   -- R15: -75 ou 75 | R6: 90 ou -90
+local LEG_X = -90   -- R15: -90 ou 90  | R6: 90 ou -90
+local KNEE_X = 90
+
 -- ===== ESTADO =====
 local isDriving, currentGear, steering = false, 0, 0
 local heightT, baseCF = 0, nil
 local held = { left = false, right = false }
 local enterT, shiftT = 0, 0
-local defaults = {}
 
--- ===== POSES =====
+-- ===== POSES (Transform, relativo à pose padrão) =====
 local ENTER_POSE = {
     Waist         = CFrame.Angles(math.rad(10),  0, 0),
     Neck          = CFrame.Angles(math.rad(-5),  0, 0),
-    RightHip      = CFrame.Angles(math.rad(-90), 0, 0),
-    LeftHip       = CFrame.Angles(math.rad(-90), 0, 0),
-    RightKnee     = CFrame.Angles(math.rad(90),  0, 0),
-    LeftKnee      = CFrame.Angles(math.rad(90),  0, 0),
-    RightShoulder = CFrame.Angles(math.rad(-80), 0, math.rad(-10)),
-    LeftShoulder  = CFrame.Angles(math.rad(-80), 0, math.rad(10)),
+    RightHip      = CFrame.Angles(math.rad(LEG_X), 0, 0),
+    LeftHip       = CFrame.Angles(math.rad(LEG_X), 0, 0),
+    RightKnee     = CFrame.Angles(math.rad(KNEE_X), 0, 0),
+    LeftKnee      = CFrame.Angles(math.rad(KNEE_X), 0, 0),
+    RightShoulder = CFrame.Angles(math.rad(ARM_X), 0, math.rad(-15)),
+    LeftShoulder  = CFrame.Angles(math.rad(ARM_X), 0, math.rad(15)),
     RightElbow    = CFrame.Angles(math.rad(-25), 0, 0),
     LeftElbow     = CFrame.Angles(math.rad(-25), 0, 0),
     RightWrist    = CFrame.Angles(math.rad(-15), 0, 0),
@@ -55,7 +61,8 @@ local SHIFT_POSE = {
     Neck          = CFrame.Angles(math.rad(-8),  0, 0),
 }
 
-local MOTOR_PATHS = {
+-- R15 padrão
+local R15_PATHS = {
     Waist         = {"LowerTorso",   "Waist"},
     Neck          = {"UpperTorso",   "Neck"},
     RightShoulder = {"UpperTorso",   "RightShoulder"},
@@ -70,28 +77,62 @@ local MOTOR_PATHS = {
     LeftKnee      = {"LeftUpperLeg", "LeftKnee"},
 }
 
+-- R6 padrão (usa espaço nos nomes)
+local R6_PATHS = {
+    Neck          = {"Torso", "Neck"},
+    RightShoulder = {"Torso", "Right Shoulder"},
+    LeftShoulder  = {"Torso", "Left Shoulder"},
+    RightHip      = {"Torso", "Right Hip"},
+    LeftHip       = {"Torso", "Left Hip"},
+}
+
+local activePaths = R15_PATHS
+local motorCache = {}
+
 local function findMotor(char, name)
-    local p = MOTOR_PATHS[name]
+    if motorCache[name] and motorCache[name].Parent then
+        return motorCache[name]
+    end
+    local p = activePaths[name]
     if not p then return nil end
     local parent = char:FindFirstChild(p[1])
     if not parent then return nil end
     local m = parent:FindFirstChild(p[2])
-    if m and m:IsA("Motor6D") then return m end
+    if m and m:IsA("Motor6D") then
+        motorCache[name] = m
+        return m
+    end
     return nil
 end
 
-local function saveDefaults(char)
-    defaults = {}
-    for name, _ in pairs(MOTOR_PATHS) do
-        local m = findMotor(char, name)
-        if m then defaults[name] = m.C0 end
+local function detectRig(char)
+    if char:FindFirstChild("LowerTorso") then
+        activePaths = R15_PATHS
+        return "R15"
+    elseif char:FindFirstChild("Torso") then
+        activePaths = R6_PATHS
+        return "R6"
+    end
+    return "unknown"
+end
+
+local function stopAllAnimations(char)
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if not hum then return end
+    local animate = char:FindFirstChild("Animate")
+    if animate then animate.Disabled = true end
+    local animator = hum:FindFirstChildOfClass("Animator")
+    if animator then
+        for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
+            track:Stop(0)
+        end
     end
 end
 
-local function restoreDefaults(char)
-    for name, c0 in pairs(defaults) do
+local function resetTransform(char)
+    for name, _ in pairs(activePaths) do
         local m = findMotor(char, name)
-        if m then m.C0 = c0 end
+        if m then m.Transform = CFrame.new() end
     end
 end
 
@@ -99,14 +140,6 @@ local function notify(title, text, duration)
     pcall(function()
         StarterGui:SetCore("SendNotification", { Title = title, Text = text, Duration = duration or 4 })
     end)
-end
-
--- ===== INPUT =====
-local function updateSteer()
-    local s = 0
-    if held.left and not held.right then s = -1
-    elseif held.right and not held.left then s = 1 end
-    steering = s
 end
 
 -- ===== GUI =====
@@ -260,6 +293,13 @@ hintLabel.TextYAlignment = Enum.TextYAlignment.Top
 hintLabel.Parent = mainFrame
 
 -- ===== BOTÕES MOBILE =====
+local function updateSteer()
+    local s = 0
+    if held.left and not held.right then s = -1
+    elseif held.right and not held.left then s = 1 end
+    steering = s
+end
+
 local function makeSteerBtn(side, pos, arrow)
     local btn = Instance.new("TextButton")
     btn.Size = UDim2.new(0, 85, 0, 85)
@@ -274,7 +314,6 @@ local function makeSteerBtn(side, pos, arrow)
     btn.Visible = false
     btn.Parent = screenGui
     Instance.new("UICorner", btn).CornerRadius = UDim.new(1, 0)
-
     local function press()
         if not isDriving then return end
         if side == "left" then held.left = true else held.right = true end
@@ -293,7 +332,6 @@ end
 local steerLeftBtn  = makeSteerBtn("left",  UDim2.new(0, 30,  1, -150), "◀")
 local steerRightBtn = makeSteerBtn("right", UDim2.new(1, -115, 1, -150), "▶")
 
--- ===== TECLADO (PC) =====
 local steerKeys = {
     [Enum.KeyCode.A]="left",  [Enum.KeyCode.Left]="left",
     [Enum.KeyCode.D]="right", [Enum.KeyCode.Right]="right",
@@ -330,10 +368,12 @@ local function enterDrive()
     local hrp = char:FindFirstChild("HumanoidRootPart")
     if not hrp then return end
 
-    local animate = char:FindFirstChild("Animate")
-    if animate then animate.Disabled = true end
+    motorCache = {}
+    local rig = detectRig(char)
+    print("[DriveFantasma] Rig detectado:", rig)
 
-    saveDefaults(char)
+    stopAllAnimations(char)
+
     isDriving, currentGear, steering, heightT = true, 0, 0, 0
     enterT, shiftT = 0, 0
     baseCF = hrp.CFrame
@@ -346,7 +386,7 @@ local function enterDrive()
     gearButtons[0].BackgroundColor3 = Color3.fromRGB(200, 80, 40)
     steerLeftBtn.Visible = true
     steerRightBtn.Visible = true
-    notify("🚗 Modo direção", "Escolha uma marcha e use ◀ ▶", 3)
+    notify("🚗 Modo direção", "Rig: " .. rig .. " — Marcha + ◀ ▶", 3)
 end
 
 local function exitDrive()
@@ -364,7 +404,7 @@ local function exitDrive()
             end
             hrp.Anchored = false
         end
-        restoreDefaults(char)
+        resetTransform(char)
         local animate = char:FindFirstChild("Animate")
         if animate then animate.Disabled = false end
     end
@@ -382,16 +422,17 @@ enterBtn.MouseButton1Click:Connect(function()
     if isDriving then exitDrive() else enterDrive() end
 end)
 
--- ===== LOOP PRINCIPAL (anima + move) =====
+-- ===== LOOP: ANIMA + MOVE =====
 RunService.Heartbeat:Connect(function(dt)
     if not isDriving then return end
     local char = localPlayer.Character
     if not char then return end
 
-    -- ANIMAÇÃO
+    -- ANIMAÇÃO via Transform
     if enterT < ENTER_TIME then enterT = math.min(ENTER_TIME, enterT + dt) end
     local rawA = enterT / ENTER_TIME
     local enterA = 1 - (1 - rawA) ^ 3
+
     if shiftT > 0 then shiftT = math.max(0, shiftT - dt) end
     local shiftA = 0
     if shiftT > 0 then
@@ -402,12 +443,12 @@ RunService.Heartbeat:Connect(function(dt)
     local I = CFrame.new()
     for name, pose in pairs(ENTER_POSE) do
         local m = findMotor(char, name)
-        if m and defaults[name] then
+        if m then
             local final = I:Lerp(pose, enterA)
             if SHIFT_POSE[name] then
                 final = final * I:Lerp(SHIFT_POSE[name], shiftA)
             end
-            m.C0 = defaults[name] * final
+            m.Transform = final
         end
     end
 
@@ -431,10 +472,10 @@ RunService.Heartbeat:Connect(function(dt)
     hrp.CFrame = cf
 end)
 
--- ===== RESPAWN =====
 localPlayer.CharacterAdded:Connect(function()
     isDriving, currentGear, steering, heightT, baseCF = false, 0, 0, 0, nil
     held.left, held.right = false, false
+    motorCache = {}
 end)
 
 floatingBtn.MouseButton1Click:Connect(function()
@@ -442,5 +483,5 @@ floatingBtn.MouseButton1Click:Connect(function()
     floatingBtn.Visible = not mainFrame.Visible
 end)
 
-notify("🚗 Direção Fantasma", "Clique no 🚗 pra abrir o painel", 5)
-print("[DriveFantasma] carregado! Clique no 🚗")
+notify("🚗 Direção Fantasma", "Clique no 🚗 pra abrir", 5)
+print("[DriveFantasma] carregado — v4 com Transform")
