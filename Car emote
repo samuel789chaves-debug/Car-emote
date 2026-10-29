@@ -1,78 +1,100 @@
-local Players = game:GetService("Players")
+-- ==========================================================
+-- 🚗 SISTEMA DE DIREÇÃO — SERVER (v2.0)
+-- ✅ Auto-cria o RemoteEvent
+-- ✅ Anima braços via Motor6D (sem AnimationId)
+-- ✅ Replica para todos os jogadores
+-- ✅ Prints de debug em cada etapa
+-- ==========================================================
+
+local Players           = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local RunService = game:GetService("RunService")
+local RunService        = game:GetService("RunService")
 
-local driveEvent = ReplicatedStorage:WaitForChild("DriveEvent")
+print("[DriveServer v2] iniciado")
 
--- ====== CONFIG ======
-local ENTER_TIME  = 0.5   -- duração da "entrada no carro"
-local SHIFT_TIME  = 0.35  -- duração da mexida do braço
-local SHIFT_CURVE = 0.7   -- força da mexida (0–1)
+-- ===== AUTO-CRIA O REMOTEEVENT =====
+local driveEvent = ReplicatedStorage:FindFirstChild("DriveEvent")
+if not driveEvent then
+    driveEvent = Instance.new("RemoteEvent")
+    driveEvent.Name = "DriveEvent"
+    driveEvent.Parent = ReplicatedStorage
+    print("[DriveServer v2] RemoteEvent 'DriveEvent' criado automaticamente")
+else
+    print("[DriveServer v2] RemoteEvent 'DriveEvent' já existia")
+end
 
--- Rotação do braço na pose "dirigindo" (relativa à pose original).
--- Se os braços forem pro lado errado, troque os sinais.
-local DRIVING_RIGHT = CFrame.Angles(math.rad(-80), 0, math.rad(-10))
-local DRIVING_LEFT  = CFrame.Angles(math.rad(-80), 0, math.rad(10))
-local SHIFT_DIP     = CFrame.Angles(math.rad(55),  0, math.rad(0))
+-- ===== CONFIG =====
+local ENTER_TIME  = 0.55
+local SHIFT_TIME  = 0.40
+local SHIFT_CURVE = 1.0
 
--- Estado por jogador
+-- Pose dos braços na direção (se forem pro lado errado, troque o sinal)
+local DRIVING_RIGHT = CFrame.Angles(math.rad(75),  0, math.rad(15))
+local DRIVING_LEFT  = CFrame.Angles(math.rad(75),  0, math.rad(-15))
+local SHIFT_DIP     = CFrame.Angles(math.rad(-55), 0, 0)
+
 local states = {}
 
--- ====== Helpers ======
-local function getShoulder(char, side)
-    local torso = char:FindFirstChild("UpperTorso")
-    if torso then
-        local m = torso:FindFirstChild(side .. "Shoulder")
-        if m then return m end
-    end
+-- ===== HELPERS =====
+local function findMotor(char, side)
+    -- R15 (UpperArm.RightShoulder)
     local arm = char:FindFirstChild(side .. "UpperArm")
-    if arm then return arm:FindFirstChild(side .. "Shoulder") end
+    if arm then
+        local m = arm:FindFirstChild(side .. "Shoulder")
+        if m and m:IsA("Motor6D") then return m end
+    end
+    -- R15 (UpperTorso.RightShoulder)
+    local ut = char:FindFirstChild("UpperTorso")
+    if ut then
+        local m = ut:FindFirstChild(side .. "Shoulder")
+        if m and m:IsA("Motor6D") then return m end
+    end
+    -- R6 (Torso.Right Shoulder)
+    local t = char:FindFirstChild("Torso")
+    if t then
+        local m = t:FindFirstChild(side .. " Shoulder") or t:FindFirstChild(side .. "Shoulder")
+        if m and m:IsA("Motor6D") then return m end
+    end
     return nil
 end
 
 local function saveDefaults(char)
-    local r, l = getShoulder(char, "Right"), getShoulder(char, "Left")
-    return { right = r and r.C0, left = l and l.C0 }
+    local r = findMotor(char, "Right")
+    local l = findMotor(char, "Left")
+    print(string.format("[DriveServer v2] Motores: Right=%s | Left=%s", tostring(r), tostring(l)))
+    return { right = r and r.C0 or nil, left = l and l.C0 or nil }
 end
 
 local function restoreDefaults(char, def)
-    local r, l = getShoulder(char, "Right"), getShoulder(char, "Left")
+    if not char then return end
+    local r = findMotor(char, "Right")
+    local l = findMotor(char, "Left")
     if r and def.right then r.C0 = def.right end
     if l and def.left  then l.C0 = def.left  end
 end
 
--- ====== Entrar / Sair ======
+-- ===== ENTER/EXIT =====
 local function enter(player)
     local char = player.Character
     if not char then return end
-    local hum = char:FindFirstChildOfClass("Humanoid")
-    if not hum then return end
+    if not char:FindFirstChildOfClass("Humanoid") then return end
 
-    -- Cancela qualquer estado antigo
     if states[player] then
         restoreDefaults(char, states[player].defaults)
     end
 
     local defaults = saveDefaults(char)
 
-    -- Para animações padrão (idle/walk) que brigariam com nosso C0
-    local animator = hum:FindFirstChildOfClass("Animator")
-    if animator then
-        for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
-            track:Stop(0)
-        end
-    end
-
-    hum.PlatformStand = true
-    hum:ChangeState(Enum.HumanoidStateType.Physics)
+    -- Desativa Animate (senão a animação default sobrescreve nosso Motor6D)
+    local animate = char:FindFirstChild("Animate")
+    if animate then animate.Disabled = true end
 
     states[player] = {
-        gear      = 0,
-        steering  = 0,
-        enterT    = 0,  -- 0 → ENTER_TIME
-        shiftT    = 0,  -- SHIFT_TIME → 0
-        defaults  = defaults,
+        gear = 0, steering = 0,
+        enterT = 0, shiftT = 0,
+        defaults = defaults,
     }
+    print("[DriveServer v2] " .. player.Name .. " ENTROU no modo direção")
 end
 
 local function exit(player)
@@ -81,17 +103,17 @@ local function exit(player)
     local char = player.Character
     if char then
         restoreDefaults(char, st.defaults)
-        local hum = char:FindFirstChildOfClass("Humanoid")
-        if hum then
-            hum.PlatformStand = false
-            hum:ChangeState(Enum.HumanoidStateType.GettingUp)
-        end
+        local animate = char:FindFirstChild("Animate")
+        if animate then animate.Disabled = false end
     end
     states[player] = nil
+    print("[DriveServer v2] " .. player.Name .. " SAIU do modo direção")
 end
 
--- ====== Eventos ======
+-- ===== EVENTOS =====
 driveEvent.OnServerEvent:Connect(function(player, action, value)
+    print(string.format("[DriveServer v2] evento: %s | %s | %s",
+        player.Name, tostring(action), tostring(value)))
     if action == "enter" then
         enter(player)
     elseif action == "exit" then
@@ -112,7 +134,7 @@ end)
 
 Players.PlayerRemoving:Connect(function(p) states[p] = nil end)
 
--- ====== Animação (Heartbeat) ======
+-- ===== ANIMAÇÃO (Heartbeat) =====
 RunService.Heartbeat:Connect(function(dt)
     for player, st in pairs(states) do
         local char = player.Character
@@ -121,31 +143,27 @@ RunService.Heartbeat:Connect(function(dt)
             continue
         end
 
-        -- Progresso da "entrada"
         if st.enterT < ENTER_TIME then
             st.enterT = math.min(ENTER_TIME, st.enterT + dt)
         end
         local enterA = st.enterT / ENTER_TIME
 
-        -- Progresso da mexida do braço (sai e volta)
         if st.shiftT > 0 then
             st.shiftT = math.max(0, st.shiftT - dt)
         end
         local shiftA = 0
         if st.shiftT > 0 then
-            local t = 1 - (st.shiftT / SHIFT_TIME)     -- 0 → 1
-            shiftA = math.sin(t * math.pi) * SHIFT_CURVE -- 0 → 1 → 0
+            local t = 1 - (st.shiftT / SHIFT_TIME)
+            shiftA = math.sin(t * math.pi) * SHIFT_CURVE
         end
 
-        -- Interpola do default pra pose dirigindo
         local I = CFrame.new()
         local rPose = I:Lerp(DRIVING_RIGHT, enterA)
         local lPose = I:Lerp(DRIVING_LEFT,  enterA)
-        -- Adiciona a mexida do braço direito por cima
         rPose = rPose * I:Lerp(SHIFT_DIP, shiftA)
 
-        local r = getShoulder(char, "Right")
-        local l = getShoulder(char, "Left")
+        local r = findMotor(char, "Right")
+        local l = findMotor(char, "Left")
         if r and st.defaults.right then r.C0 = st.defaults.right * rPose end
         if l and st.defaults.left  then l.C0 = st.defaults.left  * lPose end
     end
