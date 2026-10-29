@@ -1,346 +1,199 @@
 -- ==========================================================
--- 🚗 SISTEMA DE DIREÇÃO — CLIENT v2.1
--- ✅ GUI no PlayerGui (sem CoreGui)
--- ✅ Nunca "sai" cedo — sempre cria a GUI
--- ✅ Prints em CADA etapa
+-- 🚗 DIREÇÃO — SERVER v3.0
+-- ✅ Pose sentada completa (R15: hip, knee, waist, neck, shoulders, elbows)
+-- ✅ Braço direito dramatizado na troca de marcha
+-- ✅ Logs detalhados de cada Motor6D
 -- ==========================================================
-
-print("[DriveClient] 1. INICIANDO")
 
 local Players           = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService        = game:GetService("RunService")
-local UserInputService  = game:GetService("UserInputService")
-local StarterGui        = game:GetService("StarterGui")
 
-local localPlayer = Players.LocalPlayer
-print("[DriveClient] 2. LocalPlayer:", localPlayer and localPlayer.Name)
+print("[DriveServer v3] iniciado")
 
-local playerGui = localPlayer:WaitForChild("PlayerGui", 10)
-print("[DriveClient] 3. PlayerGui:", playerGui)
-if not playerGui then
-    warn("[DriveClient] ERRO FATAL: PlayerGui não carregou")
-    return
+local driveEvent = ReplicatedStorage:FindFirstChild("DriveEvent")
+if not driveEvent then
+    driveEvent = Instance.new("RemoteEvent")
+    driveEvent.Name = "DriveEvent"
+    driveEvent.Parent = ReplicatedStorage
 end
 
-local driveEvent = ReplicatedStorage:WaitForChild("DriveEvent", 5)
-if driveEvent then
-    print("[DriveClient] 4. RemoteEvent OK")
-else
-    warn("[DriveClient] 4. RemoteEvent NÃO encontrado (servidor não rodou?) — GUI ainda vai abrir")
-end
+-- ===== CONFIG TEMPORAL =====
+local ENTER_TIME = 0.7
+local SHIFT_TIME = 0.45
 
--- ===== CONFIG =====
-local gearSpeeds   = { [0]=0, [1]=10, [2]=22, [3]=36, [4]=52, [5]=70, [6]=90 }
-local TURN_SPEED   = 1.6
-local FLOAT_HEIGHT = 3.0
-local RISE_TIME    = 0.6
-
-local isDriving, currentGear, steering = false, 0, 0
-local heightT, baseCF = 0, nil
-
--- ===== NOTIFICAÇÃO =====
-local function notify(title, text, duration)
-    pcall(function()
-        StarterGui:SetCore("SendNotification", {
-            Title = title, Text = text, Duration = duration or 4
-        })
-    end)
-end
-
--- ===== LIMPA GUI ANTIGA =====
-pcall(function()
-    local old = playerGui:FindFirstChild("DriveCarGui")
-    if old then old:Destroy() end
-end)
-
--- ===== CRIA GUI =====
-print("[DriveClient] 5. Criando ScreenGui")
-
-local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "DriveCarGui"
-screenGui.ResetOnSpawn = false
-screenGui.DisplayOrder = 999
-screenGui.IgnoreGuiInset = true
-screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-screenGui.Parent = playerGui
-print("[DriveClient] 6. ScreenGui parent:", screenGui.Parent)
-
--- Botão flutuante 🚗
-local floatingBtn = Instance.new("TextButton")
-floatingBtn.Name = "FloatingBtn"
-floatingBtn.Size = UDim2.new(0, 60, 0, 60)
-floatingBtn.Position = UDim2.new(0, 20, 0.5, -30)
-floatingBtn.BackgroundColor3 = Color3.fromRGB(200, 80, 40)
-floatingBtn.Text = "🚗"
-floatingBtn.TextSize = 28
-floatingBtn.Font = Enum.Font.GothamBold
-floatingBtn.BorderSizePixel = 0
-floatingBtn.Active = true
-floatingBtn.Draggable = true
-floatingBtn.Parent = screenGui
-Instance.new("UICorner", floatingBtn).CornerRadius = UDim.new(1, 0)
-print("[DriveClient] 7. Botão flutuante criado")
-
--- Painel
-local mainFrame = Instance.new("Frame")
-mainFrame.Name = "MainFrame"
-mainFrame.Size = UDim2.new(0, 360, 0, 340)
-mainFrame.Position = UDim2.new(0.5, -180, 0.5, -170)
-mainFrame.BackgroundColor3 = Color3.fromRGB(28, 28, 32)
-mainFrame.BorderSizePixel = 0
-mainFrame.Active = true
-mainFrame.Draggable = true
-mainFrame.Visible = false
-mainFrame.Parent = screenGui
-Instance.new("UICorner", mainFrame).CornerRadius = UDim.new(0, 10)
-local mainStroke = Instance.new("UIStroke")
-mainStroke.Color = Color3.fromRGB(200, 80, 40)
-mainStroke.Thickness = 2
-mainStroke.Parent = mainFrame
-
--- Topo
-local titleBar = Instance.new("Frame")
-titleBar.Size = UDim2.new(1, 0, 0, 40)
-titleBar.BackgroundColor3 = Color3.fromRGB(160, 60, 30)
-titleBar.BorderSizePixel = 0
-titleBar.Parent = mainFrame
-Instance.new("UICorner", titleBar).CornerRadius = UDim.new(0, 10)
-
-local titleFix = Instance.new("Frame")
-titleFix.Size = UDim2.new(1, 0, 0, 10)
-titleFix.Position = UDim2.new(0, 0, 1, -10)
-titleFix.BackgroundColor3 = Color3.fromRGB(160, 60, 30)
-titleFix.BorderSizePixel = 0
-titleFix.Parent = titleBar
-
-local titleLabel = Instance.new("TextLabel")
-titleLabel.Size = UDim2.new(1, -50, 1, 0)
-titleLabel.Position = UDim2.new(0, 15, 0, 0)
-titleLabel.BackgroundTransparency = 1
-titleLabel.Text = "🚗 Direção Fantasma"
-titleLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-titleLabel.TextSize = 18
-titleLabel.Font = Enum.Font.GothamBold
-titleLabel.TextXAlignment = Enum.TextXAlignment.Left
-titleLabel.Parent = titleBar
-
-local closeBtn = Instance.new("TextButton")
-closeBtn.Size = UDim2.new(0, 30, 0, 30)
-closeBtn.Position = UDim2.new(1, -38, 0, 5)
-closeBtn.BackgroundColor3 = Color3.fromRGB(200, 60, 60)
-closeBtn.Text = "X"
-closeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-closeBtn.TextSize = 14
-closeBtn.Font = Enum.Font.GothamBold
-closeBtn.BorderSizePixel = 0
-closeBtn.Parent = titleBar
-Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0, 6)
-closeBtn.MouseButton1Click:Connect(function()
-    mainFrame.Visible = false
-    floatingBtn.Visible = true
-end)
-
--- Botão entrar
-local enterBtn = Instance.new("TextButton")
-enterBtn.Size = UDim2.new(1, -30, 0, 55)
-enterBtn.Position = UDim2.new(0, 15, 0, 55)
-enterBtn.BackgroundColor3 = Color3.fromRGB(50, 160, 80)
-enterBtn.Text = "🚗 Entrar no carro"
-enterBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-enterBtn.TextSize = 17
-enterBtn.Font = Enum.Font.GothamBold
-enterBtn.BorderSizePixel = 0
-enterBtn.Parent = mainFrame
-Instance.new("UICorner", enterBtn).CornerRadius = UDim.new(0, 8)
-
--- Status
-local statusLabel = Instance.new("TextLabel")
-statusLabel.Size = UDim2.new(1, -30, 0, 22)
-statusLabel.Position = UDim2.new(0, 15, 0, 120)
-statusLabel.BackgroundTransparency = 1
-statusLabel.Text = "⚪ Parado"
-statusLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
-statusLabel.TextSize = 14
-statusLabel.Font = Enum.Font.Gotham
-statusLabel.TextXAlignment = Enum.TextXAlignment.Left
-statusLabel.Parent = mainFrame
-
--- Marchas
-local gearFrame = Instance.new("Frame")
-gearFrame.Size = UDim2.new(1, -30, 0, 80)
-gearFrame.Position = UDim2.new(0, 15, 0, 150)
-gearFrame.BackgroundColor3 = Color3.fromRGB(40, 40, 48)
-gearFrame.BorderSizePixel = 0
-gearFrame.Parent = mainFrame
-Instance.new("UICorner", gearFrame).CornerRadius = UDim.new(0, 8)
-
-local gearList = Instance.new("UIListLayout")
-gearList.FillDirection = Enum.FillDirection.Horizontal
-gearList.HorizontalAlignment = Enum.HorizontalAlignment.Center
-gearList.VerticalAlignment = Enum.VerticalAlignment.Center
-gearList.Padding = UDim.new(0, 4)
-gearList.Parent = gearFrame
-
-local gearButtons = {}
-for i = 0, 6 do
-    local btn = Instance.new("TextButton")
-    btn.Size = UDim2.new(0, 40, 0, 60)
-    btn.BackgroundColor3 = Color3.fromRGB(60, 60, 68)
-    btn.Text = (i == 0) and "N" or tostring(i)
-    btn.TextColor3 = Color3.fromRGB(255, 255, 255)
-    btn.TextSize = 20
-    btn.Font = Enum.Font.GothamBold
-    btn.BorderSizePixel = 0
-    btn.Parent = gearFrame
-    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6)
-    gearButtons[i] = btn
-
-    btn.MouseButton1Click:Connect(function()
-        if not isDriving then return end
-        currentGear = i
-        if driveEvent then driveEvent:FireServer("gear", i) end
-        for g, b in pairs(gearButtons) do
-            b.BackgroundColor3 = (g == i)
-                and Color3.fromRGB(200, 80, 40)
-                or  Color3.fromRGB(60, 60, 68)
-        end
-        statusLabel.Text = "🟢 Marcha " .. ((i == 0) and "N" or i)
-            .. " | Velocidade: " .. (gearSpeeds[i] or 0)
-    end)
-end
-
--- Instruções
-local hintLabel = Instance.new("TextLabel")
-hintLabel.Size = UDim2.new(1, -30, 0, 60)
-hintLabel.Position = UDim2.new(0, 15, 0, 240)
-hintLabel.BackgroundTransparency = 1
-hintLabel.Text = "🅰️/🅳 ou setas ← → para virar.\nEscolha uma marcha para acelerar."
-hintLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
-hintLabel.TextSize = 13
-hintLabel.Font = Enum.Font.Gotham
-hintLabel.TextWrapped = true
-hintLabel.TextXAlignment = Enum.TextXAlignment.Left
-hintLabel.TextYAlignment = Enum.TextYAlignment.Top
-hintLabel.Parent = mainFrame
-
-print("[DriveClient] 8. Painel completo criado")
-
--- ===== INPUT =====
-local steerKeys = {
-    [Enum.KeyCode.A]="left",  [Enum.KeyCode.Left]="left",
-    [Enum.KeyCode.D]="right", [Enum.KeyCode.Right]="right",
+-- =====================================================
+-- POSE DIRIGINDO (sentado)
+-- Se algum membro estiver girado pro lado errado,
+-- troque o SINAL do número (ex: -80 → 80).
+-- =====================================================
+local ENTER_POSE = {
+    Waist         = CFrame.Angles(math.rad(10),  0, 0),  -- torso inclina pra frente
+    Neck          = CFrame.Angles(math.rad(-5),  0, 0),  -- cabeça reta
+    RightHip      = CFrame.Angles(math.rad(-90), 0, 0),  -- coxa pra frente
+    LeftHip       = CFrame.Angles(math.rad(-90), 0, 0),
+    RightKnee     = CFrame.Angles(math.rad(90),  0, 0),  -- canela pra baixo
+    LeftKnee      = CFrame.Angles(math.rad(90),  0, 0),
+    RightShoulder = CFrame.Angles(math.rad(-80), 0, math.rad(0)),  -- braço pra frente
+    LeftShoulder  = CFrame.Angles(math.rad(-80), 0, math.rad(0)),
+    RightElbow    = CFrame.Angles(math.rad(-25), 0, 0),  -- cotovelo flexionado
+    LeftElbow     = CFrame.Angles(math.rad(-25), 0, 0),
+    RightWrist    = CFrame.Angles(math.rad(-15), 0, 0),
+    LeftWrist     = CFrame.Angles(math.rad(-15), 0, 0),
 }
-local held = { left = false, right = false }
 
-local function updateSteer()
-    local s = 0
-    if held.left and not held.right then s = -1
-    elseif held.right and not held.left then s = 1 end
-    if s ~= steering then
-        steering = s
-        if driveEvent then driveEvent:FireServer("steer", s) end
-    end
+-- =====================================================
+-- DELTA DA TROCA DE MARCHA (aplicado por cima da pose)
+-- =====================================================
+local SHIFT_POSE = {
+    RightShoulder = CFrame.Angles(math.rad(25),  0, math.rad(-10)),
+    RightElbow    = CFrame.Angles(math.rad(-45), 0, 0),
+    RightWrist    = CFrame.Angles(math.rad(-30), 0, 0),
+    Waist         = CFrame.Angles(math.rad(8),   0, 0),
+    Neck          = CFrame.Angles(math.rad(-8),  0, 0),
+}
+
+-- ===== MAPA DOS MOTORES =====
+local MOTOR_PATHS = {
+    Waist         = {"LowerTorso",   "Waist"},
+    Neck          = {"UpperTorso",   "Neck"},
+    RightShoulder = {"UpperTorso",   "RightShoulder"},
+    LeftShoulder  = {"UpperTorso",   "LeftShoulder"},
+    RightElbow    = {"RightUpperArm","RightElbow"},
+    LeftElbow     = {"LeftUpperArm", "LeftElbow"},
+    RightWrist    = {"RightLowerArm","RightWrist"},
+    LeftWrist     = {"LeftLowerArm", "LeftWrist"},
+    RightHip      = {"LowerTorso",   "RightHip"},
+    LeftHip       = {"LowerTorso",   "LeftHip"},
+    RightKnee     = {"RightUpperLeg","RightKnee"},
+    LeftKnee      = {"LeftUpperLeg", "LeftKnee"},
+}
+
+local function findMotor(char, name)
+    local p = MOTOR_PATHS[name]
+    if not p then return nil end
+    local parent = char:FindFirstChild(p[1])
+    if not parent then return nil end
+    local m = parent:FindFirstChild(p[2])
+    if m and m:IsA("Motor6D") then return m end
+    return nil
 end
 
-UserInputService.InputBegan:Connect(function(input, gpe)
-    if gpe or not isDriving then return end
-    local k = steerKeys[input.KeyCode]
-    if k then held[k] = true; updateSteer() end
-end)
-
-UserInputService.InputEnded:Connect(function(input)
-    local k = steerKeys[input.KeyCode]
-    if k then held[k] = false; updateSteer() end
-end)
-
--- ===== ENTRAR/SAIR =====
-local function enterDrive()
-    local char = localPlayer.Character
-    if not char then return end
-    local hrp = char:FindFirstChild("HumanoidRootPart")
-    if not hrp then return end
-
-    isDriving, currentGear, steering, heightT = true, 0, 0, 0
-    baseCF = hrp.CFrame
-    hrp.Anchored = true
-
-    enterBtn.Text = "🚪 Sair do carro"
-    enterBtn.BackgroundColor3 = Color3.fromRGB(200, 60, 60)
-    statusLabel.Text = "⚪ Marcha N (parado)"
-    for _, b in pairs(gearButtons) do b.BackgroundColor3 = Color3.fromRGB(60, 60, 68) end
-    gearButtons[0].BackgroundColor3 = Color3.fromRGB(200, 80, 40)
-
-    if driveEvent then driveEvent:FireServer("enter") end
-    notify("🚗 Modo direção", "Escolha uma marcha no painel", 3)
-end
-
-local function exitDrive()
-    if not isDriving then return end
-    isDriving = false
-    local char = localPlayer.Character
-    if char then
-        local hrp = char:FindFirstChild("HumanoidRootPart")
-        if hrp then
-            if baseCF then hrp.CFrame = baseCF end
-            hrp.Anchored = false
+local function saveDefaults(char)
+    local defaults = {}
+    local found, missing = 0, {}
+    for name, _ in pairs(MOTOR_PATHS) do
+        local m = findMotor(char, name)
+        if m then
+            defaults[name] = m.C0
+            found = found + 1
+        else
+            table.insert(missing, name)
         end
     end
-    enterBtn.Text = "🚗 Entrar no carro"
-    enterBtn.BackgroundColor3 = Color3.fromRGB(50, 160, 80)
-    statusLabel.Text = "⚪ Parado"
-    held.left, held.right = false, false
-    if steering ~= 0 then
-        steering = 0
-        if driveEvent then driveEvent:FireServer("steer", 0) end
-    end
-    if driveEvent then driveEvent:FireServer("exit") end
+    print(string.format("[DriveServer v3] Motores: %d encontrados, faltando: %s",
+        found, #missing > 0 and table.concat(missing, ", ") or "nenhum"))
+    return defaults
 end
 
-enterBtn.MouseButton1Click:Connect(function()
-    print("[DriveClient] click Enter. isDriving =", isDriving)
-    if isDriving then exitDrive() else enterDrive() end
+local function restoreDefaults(char, defaults)
+    for name, c0 in pairs(defaults) do
+        local m = findMotor(char, name)
+        if m then m.C0 = c0 end
+    end
+end
+
+-- ===== ENTER/EXIT =====
+local function enter(player)
+    local char = player.Character
+    if not char or not char:FindFirstChildOfClass("Humanoid") then return end
+    if states[player] then restoreDefaults(char, states[player].defaults) end
+    local defaults = saveDefaults(char)
+    local animate = char:FindFirstChild("Animate")
+    if animate then animate.Disabled = true end
+    states[player] = { gear = 0, steering = 0, enterT = 0, shiftT = 0, defaults = defaults }
+    print("[DriveServer v3] " .. player.Name .. " ENTROU")
+end
+
+local function exit(player)
+    local st = states[player]
+    if not st then return end
+    local char = player.Character
+    if char then
+        restoreDefaults(char, st.defaults)
+        local animate = char:FindFirstChild("Animate")
+        if animate then animate.Disabled = false end
+    end
+    states[player] = nil
+    print("[DriveServer v3] " .. player.Name .. " SAIU")
+end
+
+local states = {}
+
+driveEvent.OnServerEvent:Connect(function(player, action, value)
+    if action == "enter" then enter(player)
+    elseif action == "exit" then exit(player)
+    elseif action == "gear" then
+        local st = states[player]
+        if not st then return end
+        if typeof(value) ~= "number" or value < 0 or value > 6 then return end
+        if st.gear == value then return end
+        st.gear = value
+        st.shiftT = SHIFT_TIME
+    elseif action == "steer" then
+        local st = states[player]
+        if not st then return end
+        st.steering = math.clamp(tonumber(value) or 0, -1, 1)
+    end
 end)
 
--- ===== MOVIMENTO =====
+Players.PlayerRemoving:Connect(function(p) states[p] = nil end)
+
+-- ===== ANIMAÇÃO =====
 RunService.Heartbeat:Connect(function(dt)
-    if not isDriving then return end
-    local char = localPlayer.Character
-    if not char then return end
-    local hrp = char:FindFirstChild("HumanoidRootPart")
-    if not hrp or not baseCF then return end
+    for player, st in pairs(states) do
+        local char = player.Character
+        if not char or not char.Parent then
+            states[player] = nil
+            continue
+        end
 
-    if heightT < 1 then heightT = math.min(1, heightT + dt / RISE_TIME) end
-    local targetY = baseCF.Y + FLOAT_HEIGHT * heightT
+        if st.enterT < ENTER_TIME then
+            st.enterT = math.min(ENTER_TIME, st.enterT + dt)
+        end
+        local rawA = st.enterT / ENTER_TIME
+        local enterA = 1 - (1 - rawA) ^ 3  -- ease-out cubic
 
-    local cf = hrp.CFrame
-    cf = cf + Vector3.new(0, targetY - cf.Y, 0)
+        if st.shiftT > 0 then
+            st.shiftT = math.max(0, st.shiftT - dt)
+        end
+        local shiftA = 0
+        if st.shiftT > 0 then
+            local t = 1 - (st.shiftT / SHIFT_TIME)
+            shiftA = math.sin(t * math.pi)
+        end
 
-    local speed = gearSpeeds[currentGear] or 0
-    if speed > 0 and steering ~= 0 then
-        cf = cf * CFrame.Angles(0, -steering * TURN_SPEED * dt, 0)
+        local I = CFrame.new()
+
+        for name, pose in pairs(ENTER_POSE) do
+            local m = findMotor(char, name)
+            if m and st.defaults[name] then
+                local final = I:Lerp(pose, enterA)
+                if SHIFT_POSE[name] then
+                    final = final * I:Lerp(SHIFT_POSE[name], shiftA)
+                end
+                m.C0 = st.defaults[name] * final
+            end
+        end
+
+        -- Aplica shift também em motores que não têm pose base
+        for name, pose in pairs(SHIFT_POSE) do
+            if not ENTER_POSE[name] then
+                local m = findMotor(char, name)
+                if m and st.defaults[name] then
+                    m.C0 = st.defaults[name] * I:Lerp(pose, shiftA)
+                end
+            end
+        end
     end
-    if speed > 0 then
-        cf = cf * CFrame.new(0, 0, -speed * dt)
-    end
-    hrp.CFrame = cf
 end)
-
--- ===== RESPAWN =====
-localPlayer.CharacterAdded:Connect(function()
-    isDriving, currentGear, steering, heightT, baseCF = false, 0, 0, 0, nil
-    enterBtn.Text = "🚗 Entrar no carro"
-    enterBtn.BackgroundColor3 = Color3.fromRGB(50, 160, 80)
-    statusLabel.Text = "⚪ Parado"
-    held.left, held.right = false, false
-end)
-
--- ===== FLUTUANTE =====
-floatingBtn.MouseButton1Click:Connect(function()
-    print("[DriveClient] click flutuante. mainFrame antes:", mainFrame.Visible)
-    mainFrame.Visible = not mainFrame.Visible
-    floatingBtn.Visible = not mainFrame.Visible
-end)
-
-notify("🚗 Sistema de Direção", "Clique no botão 🚗 na lateral", 5)
-print("[DriveClient] 9. TUDO PRONTO")
